@@ -9,3 +9,6 @@ __pycache__/
 
 # Serialised account information
 accounts.pkl
+
+# Training data
+data/

@@ -1,4 +1,8 @@
 import copy
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from search import Search  # Import from search.py in the root directory
 
 from PyQt5.QtCore import pyqtSignal, QPropertyAnimation, QEventLoop, QRegExp, Qt, QThread
 from PyQt5.QtGui import QIcon, QPixmap
@@ -7,7 +11,8 @@ from PyQt5.QtWidgets import QApplication, QFrame, QGridLayout, QLabel, QMessageB
 import common
 from consts import CASTLING, PROMOTION, KNIGHT_PROMOTION, BISHOP_PROMOTION, ROOK_PROMOTION, QUEEN_PROMOTION
 from position import Position
-from search import Search
+from ml.evaluator import MLEvaluator
+from ml_search.wrapper import MLSearchWrapper
 
 SQR_SIZE = 100
 
@@ -30,7 +35,13 @@ class ChessBoard(QFrame):
 
         self.position = Position(common.starting_fen)
         self.user_is_white = self.parent.user_is_white
-        self.search = Search(self.position)
+
+        # Create ML evaluator with fallback
+        self.ml_evaluator = MLEvaluator(model_path="ml/models/chess_model.pt", use_traditional_fallback=True)
+
+        # Create search wrapper using ML evaluator
+        self.search = MLSearchWrapper(self.position, self.ml_evaluator)
+
         self.search_thread = SearchThread(self)
         self.self_play = False
         self.difficulty = None
@@ -84,12 +95,18 @@ class ChessBoard(QFrame):
 
     def set_fen(self, fen):
         self.position = Position(fen)
-        self.search = Search(self.position)
+
+        # Create search wrapper that uses our ML evaluator
+        self.search = MLSearchWrapper(self.position, self.ml_evaluator)
+
         self.refresh_from_state()
 
     def set_position(self, position):
         self.position = position
-        self.search = Search(self.position)
+
+        # Create search wrapper that uses our ML evaluator
+        self.search = MLSearchWrapper(self.position, self.ml_evaluator)
+
         self.refresh_from_state()
 
     def clear(self):
@@ -343,16 +360,24 @@ class SearchThread(QThread):
     def run(self):
         self.board.disable_pieces()
 
+        # Use our ML-based search when difficulty level is high enough
+        # For lower difficulties, we can use traditional evaluation for faster response
+        if self.board.difficulty <= 2:  # Easier levels - use traditional eval
+            self.board.ml_evaluator.use_ml = False
+        else:  # Harder levels - use ML evaluation
+            self.board.ml_evaluator.use_ml = True
+
+        # Use the existing search interface
         if self.board.difficulty == 1:
-            move = self.board.search.iter_search(max_depth=1)  # Depth 1 search
+            move = self.board.search.find_best_move(max_depth=1)
         elif self.board.difficulty == 2:
-            move = self.board.search.iter_search(max_depth=2)  # Depth 2 search
+            move = self.board.search.find_best_move(max_depth=2)
         elif self.board.difficulty == 3:
-            move = self.board.search.iter_search(time_limit=0.1)  # 0.1 second search
+            move = self.board.search.find_best_move(time_limit=0.1)
         elif self.board.difficulty == 4:
-            move = self.board.search.iter_search(time_limit=1)  # 1 second search
+            move = self.board.search.find_best_move(time_limit=1)
         elif self.board.difficulty == 5:
-            move = self.board.search.iter_search(time_limit=5)  # 5 second search
+            move = self.board.search.find_best_move(time_limit=5)
 
         self.board.position = self.board.search.position
 
@@ -412,8 +437,8 @@ class PieceLabel(QLabel):
 
     def mousePressEvent(self, event):
         if self.is_enabled:
-            if event.buttons() == Qt.LeftButton:
-                if self.board.user_is_white == self.is_white:
+            if self.board.user_is_white == self.is_white:
+                if event.buttons() == Qt.LeftButton:
                     # Set closed hand cursor while dragging a piece
                     QApplication.setOverrideCursor(Qt.ClosedHandCursor)
 
@@ -449,8 +474,8 @@ class PieceLabel(QLabel):
 
     def mouseMoveEvent(self, event):
         if self.is_enabled:
-            if event.buttons() == Qt.LeftButton:
-                if self.board.user_is_white == self.is_white:
+            if self.board.user_is_white == self.is_white:
+                if event.buttons() == Qt.LeftButton:
                     # Update mouse position, relative to the chess board
                     self.mouse_pos = self.mapToParent(self.mapFromGlobal(event.globalPos()))
 
